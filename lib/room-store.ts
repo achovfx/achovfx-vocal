@@ -28,8 +28,6 @@ if (!globalForRooms.__AURA_VOICE_ROOMS) {
 
 const memoryRooms: Map<string, RoomState> = globalForRooms.__AURA_VOICE_ROOMS;
 
-// On serverless deployments each instance has its own memory. Upstash Redis
-// provides the shared room/signaling state needed by multiple users.
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL?.replace(/\/$/, '');
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const useRedis = Boolean(REDIS_URL && REDIS_TOKEN);
@@ -40,7 +38,6 @@ function redisKey(roomId: string, suffix: string) {
 
 async function redisCommand<T = unknown>(command: unknown[]): Promise<T> {
   if (!REDIS_URL || !REDIS_TOKEN) throw new Error('Redis is not configured');
-
   const response = await fetch(REDIS_URL, {
     method: 'POST',
     headers: {
@@ -50,7 +47,6 @@ async function redisCommand<T = unknown>(command: unknown[]): Promise<T> {
     body: JSON.stringify(command),
     cache: 'no-store',
   });
-
   if (!response.ok) throw new Error(`Redis request failed: ${response.status}`);
   const data = (await response.json()) as { result?: T; error?: string };
   if (data.error) throw new Error(data.error);
@@ -59,7 +55,6 @@ async function redisCommand<T = unknown>(command: unknown[]): Promise<T> {
 
 async function redisPipeline(commands: unknown[][]): Promise<unknown[]> {
   if (!REDIS_URL || !REDIS_TOKEN) throw new Error('Redis is not configured');
-
   const response = await fetch(`${REDIS_URL}/pipeline`, {
     method: 'POST',
     headers: {
@@ -69,7 +64,6 @@ async function redisPipeline(commands: unknown[][]): Promise<unknown[]> {
     body: JSON.stringify(commands),
     cache: 'no-store',
   });
-
   if (!response.ok) throw new Error(`Redis pipeline failed: ${response.status}`);
   const data = (await response.json()) as Array<{ result?: unknown; error?: string }>;
   for (const item of data) if (item.error) throw new Error(item.error);
@@ -89,6 +83,11 @@ function parseHashValues(values: unknown): Participant[] {
     }
   }
   return participants;
+}
+
+function shouldParticipantOffer(offerer: Participant, target: Participant): boolean {
+  if (offerer.joinedAt !== target.joinedAt) return offerer.joinedAt < target.joinedAt;
+  return offerer.id < target.id;
 }
 
 function cleanupMemoryRoom(room: RoomState) {
@@ -264,6 +263,26 @@ export async function sendSignal(
   toId: string | undefined,
   payload: SignalPayload
 ): Promise<void> {
+  if (payload.type === 'sdp-offer' && toId) {
+    if (useRedis) {
+      const participantsKey = redisKey(roomId, 'participants');
+      const [fromRaw, toRaw] = await redisPipeline([
+        ['HGET', participantsKey, fromId],
+        ['HGET', participantsKey, toId],
+      ]) as [unknown, unknown];
+      if (typeof fromRaw === 'string' && typeof toRaw === 'string') {
+        const fromParticipant = JSON.parse(fromRaw) as Participant;
+        const toParticipant = JSON.parse(toRaw) as Participant;
+        if (!shouldParticipantOffer(fromParticipant, toParticipant)) return;
+      }
+    } else {
+      const room = memoryRooms.get(roomId);
+      const fromParticipant = room?.participants.get(fromId);
+      const toParticipant = room?.participants.get(toId);
+      if (fromParticipant && toParticipant && !shouldParticipantOffer(fromParticipant, toParticipant)) return;
+    }
+  }
+
   const signal: StoredSignal = {
     id: `sig_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
     from: fromId,
