@@ -179,9 +179,10 @@ class SoundEffectsManager {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
 
       osc.connect(gain);
-      osc.stop(now + 0.18);
       gain.connect(ctx.destination);
+
       osc.start(now);
+      osc.stop(now + 0.18);
     } catch {
       // Ignore audio error
     }
