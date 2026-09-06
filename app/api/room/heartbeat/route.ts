@@ -4,8 +4,22 @@ import { heartbeat } from '@/lib/room-store';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+function redisConfigured() {
+  return Boolean(
+    process.env.UPSTASH_REDIS_REST_URL &&
+    process.env.UPSTASH_REDIS_REST_TOKEN
+  );
+}
+
 export async function POST(req: NextRequest) {
   try {
+    if (process.env.NODE_ENV === 'production' && !redisConfigured()) {
+      return NextResponse.json(
+        { error: 'Production signaling requires UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN' },
+        { status: 503 }
+      );
+    }
+
     const body = await req.json();
     const { roomId, participantId, lastSignalTimestamp, updates } = body;
 
