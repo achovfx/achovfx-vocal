@@ -21,10 +21,30 @@ export async function POST(request: Request) {
     }
 
     const client = new StreamClient(apiKey, apiSecret);
-    const token = client.generateUserToken({ user_id: userId, validity_in_seconds: 60 * 60 });
 
-    return NextResponse.json({ token, apiKey, user: { id: userId, name, type: 'guest' } });
-  } catch {
+    // These are anonymous app users, but they need the regular Stream
+    // `user` role because they create/join rooms. The Stream `guest` role
+    // is intentionally restricted and cannot create calls by default.
+    await client.upsertUsers([
+      {
+        id: userId,
+        name,
+        role: 'user',
+      },
+    ]);
+
+    const token = client.generateUserToken({
+      user_id: userId,
+      validity_in_seconds: 60 * 60,
+    });
+
+    return NextResponse.json({
+      token,
+      apiKey,
+      user: { id: userId, name, role: 'user' },
+    });
+  } catch (error) {
+    console.error('Stream token error:', error);
     return NextResponse.json({ error: 'Unable to create Stream token' }, { status: 500 });
   }
 }
