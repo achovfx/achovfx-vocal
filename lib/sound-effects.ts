@@ -1,16 +1,16 @@
 'use client';
 
-// WebRTC SDP offers are routed through the room API so the server can enforce
-// one deterministic offerer per pair. BroadcastChannel is still useful for
-// low-latency UI/chat events, but forwarding SDP offers through it can create
-// offer glare when two tabs join the same room at nearly the same time.
+// SDP offers are routed through the room API so the server can enforce one
+// deterministic offerer per peer pair. Do not mirror offers through the local
+// BroadcastChannel: two tabs joining together can otherwise create offer glare.
 function installWebRTCSignalGuard() {
   if (typeof window === 'undefined' || !window.BroadcastChannel) return;
 
-  const proto = window.BroadcastChannel.prototype as BroadcastChannel['__proto__'] & {
+  type GuardedPrototype = typeof window.BroadcastChannel.prototype & {
     __auraWebRTCGuardInstalled?: boolean;
   };
 
+  const proto = window.BroadcastChannel.prototype as GuardedPrototype;
   if (proto.__auraWebRTCGuardInstalled) return;
 
   const originalPostMessage = proto.postMessage;
@@ -179,10 +179,9 @@ class SoundEffectsManager {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
 
       osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      osc.start(now);
       osc.stop(now + 0.18);
+      gain.connect(ctx.destination);
+      osc.start(now);
     } catch {
       // Ignore audio error
     }
