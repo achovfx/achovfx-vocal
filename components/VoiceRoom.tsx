@@ -11,9 +11,7 @@ import {
   MoreHorizontal,
   Radio,
   Send,
-  Sparkles,
   Users,
-  Volume2,
   VolumeX,
   X,
 } from 'lucide-react';
@@ -23,16 +21,31 @@ const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.cloudflare.com:3478' },
     { urls: 'stun:stun.l.google.com:19302' },
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
   iceCandidatePoolSize: 10,
+  bundlePolicy: 'max-bundle',
+  rtcpMuxPolicy: 'require',
 };
 
 interface Props { roomId: string; userName: string; onLeave: () => void; }
 
 const REACTIONS = ['👏', '❤️', '🔥', '😂', '🎉', '👍'];
 
+type PeerStatus = 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed';
+
 function shouldInitiate(a: Participant, b: Participant) {
-  return a.joinedAt !== b.joinedAt ? a.joinedAt < b.joinedAt : a.id < b.id;
+  if (a.joinOrder !== b.joinOrder) return a.joinOrder < b.joinOrder;
+  if (a.joinedAt !== b.joinedAt) return a.joinedAt < b.joinedAt;
+  return a.id < b.id;
 }
 
 function initials(name: string) {
@@ -44,6 +57,7 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [reactions, setReactions] = useState<ReactionItem[]>([]);
+  const [peerStatuses, setPeerStatuses] = useState<Record<string, PeerStatus>>({});
   const [chatOpen, setChatOpen] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [connecting, setConnecting] = useState(true);
@@ -65,25 +79,34 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
   const muteRef = useRef(false);
   const deafenRef = useRef(false);
   const offeringRef = useRef<Set<string>>(new Set());
+  const offerRef = useRef<(remote: Participant, iceRestart?: boolean) => Promise<void>>(async () => {});
   const handleSignalRef = useRef<(payload: SignalPayload, fromId: string) => Promise<void>>(async () => {});
   const messagesRef = useRef<HTMLDivElement>(null);
 
   const replaceParticipants = useCallback((next: Participant[]) => {
-    participantsRef.current = next;
-    setParticipants(next);
+    const unique = Array.from(new Map(next.map((p) => [p.id, p])).values());
+    participantsRef.current = unique;
+    setParticipants(unique);
+  }, []);
+
+  const setPeerStatus = useCallback((id: string, status: PeerStatus) => {
+    setPeerStatuses((current) => ({ ...current, [id]: status }));
   }, []);
 
   const sendSignal = useCallback(async (payload: SignalPayload, toId?: string) => {
     const fromId = selfRef.current?.id;
     if (!fromId || stoppedRef.current) return;
     try {
-      await fetch('/api/room/signal', {
+      const response = await fetch('/api/room/signal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ roomId, fromId, toId, payload }),
         cache: 'no-store',
       });
-    } catch {}
+      if (!response.ok) throw new Error('signal failed');
+    } catch {
+      // Heartbeat will retry the connection when necessary.
+    }
   }, [roomId]);
 
   const closePeer = useCallback((id: string) => {
@@ -92,63 +115,89 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
     pendingRef.current.delete(id);
     offeringRef.current.delete(id);
     const audio = audioRef.current.get(id);
-    if (audio) { audio.pause(); audio.srcObject = null; audio.remove(); }
+    if (audio) {
+      audio.pause();
+      audio.srcObject = null;
+      audio.remove();
+    }
     audioRef.current.delete(id);
-  }, []);
+    setPeerStatus(id, 'failed');
+  }, [setPeerStatus]);
 
   const createPeer = useCallback((remote: Participant) => {
-    const old = peersRef.current.get(remote.id);
-    if (old && old.signalingState !== 'closed') return old;
+    const existing = peersRef.current.get(remote.id);
+    if (existing && existing.signalingState !== 'closed') return existing;
 
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peersRef.current.set(remote.id, pc);
-    localStreamRef.current?.getTracks().forEach((track) => pc.addTrack(track, localStreamRef.current!));
+    setPeerStatus(remote.id, 'connecting');
+
+    const stream = localStreamRef.current;
+    if (stream) {
+      for (const track of stream.getAudioTracks()) pc.addTrack(track, stream);
+    }
 
     pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        void sendSignal({ type: 'ice-candidate', from: selfRef.current?.id || '', to: remote.id, candidate: event.candidate.toJSON() }, remote.id);
-      }
+      if (!event.candidate) return;
+      void sendSignal({
+        type: 'ice-candidate',
+        from: selfRef.current?.id || '',
+        to: remote.id,
+        candidate: event.candidate.toJSON(),
+      }, remote.id);
     };
 
     pc.ontrack = (event) => {
-      const stream = event.streams[0] || new MediaStream([event.track]);
+      const remoteStream = event.streams[0] || new MediaStream([event.track]);
       let audio = audioRef.current.get(remote.id);
       if (!audio) {
         audio = document.createElement('audio');
         audio.autoplay = true;
+        audio.playsInline = true;
+        audio.setAttribute('aria-hidden', 'true');
         audio.volume = 1;
         audioRef.current.set(remote.id, audio);
         document.body.appendChild(audio);
       }
-      audio.srcObject = stream;
+      audio.srcObject = remoteStream;
       audio.muted = deafenRef.current;
-      void audio.play().catch(() => setNeedsAudioUnlock(true));
+      void audio.play().then(() => setNeedsAudioUnlock(false)).catch(() => setNeedsAudioUnlock(true));
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') closePeer(remote.id);
+      const state = pc.connectionState;
+      if (state === 'connected') setPeerStatus(remote.id, 'connected');
+      else if (state === 'connecting') setPeerStatus(remote.id, 'connecting');
+      else if (state === 'disconnected') setPeerStatus(remote.id, 'disconnected');
+      else if (state === 'failed') {
+        setPeerStatus(remote.id, 'failed');
+        closePeer(remote.id);
+        if (selfRef.current && shouldInitiate(selfRef.current, remote)) {
+          window.setTimeout(() => void offerRef.current(remote, true), 700);
+        }
+      } else if (state === 'closed') {
+        setPeerStatus(remote.id, 'failed');
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        setPeerStatus(remote.id, 'connected');
+      } else if (pc.iceConnectionState === 'checking') {
+        setPeerStatus(remote.id, 'connecting');
+      } else if (pc.iceConnectionState === 'disconnected') {
+        setPeerStatus(remote.id, 'disconnected');
+      } else if (pc.iceConnectionState === 'failed') {
+        if (selfRef.current && shouldInitiate(selfRef.current, remote)) {
+          window.setTimeout(() => void offerRef.current(remote, true), 500);
+        }
+      }
     };
 
     return pc;
-  }, [closePeer, sendSignal]);
+  }, [closePeer, sendSignal, setPeerStatus]);
 
-  const offer = useCallback(async (remote: Participant) => {
-    const local = selfRef.current;
-    if (!local || !shouldInitiate(local, remote) || offeringRef.current.has(remote.id)) return;
-    offeringRef.current.add(remote.id);
-    try {
-      let pc = peersRef.current.get(remote.id);
-      if (!pc || pc.signalingState === 'closed') pc = createPeer(remote);
-      if (!pc || pc.signalingState !== 'stable') return;
-      await pc.setLocalDescription(await pc.createOffer());
-      if (pc.localDescription) {
-        await sendSignal({ type: 'sdp-offer', from: local.id, to: remote.id, sdp: pc.localDescription }, remote.id);
-      }
-    } catch { closePeer(remote.id); }
-    finally { offeringRef.current.delete(remote.id); }
-  }, [closePeer, createPeer, sendSignal]);
-
-  const flush = useCallback(async (id: string, pc: RTCPeerConnection) => {
+  const flushCandidates = useCallback(async (id: string, pc: RTCPeerConnection) => {
     const candidates = pendingRef.current.get(id) || [];
     pendingRef.current.delete(id);
     for (const candidate of candidates) {
@@ -156,8 +205,46 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
     }
   }, []);
 
+  const offer = useCallback(async (remote: Participant, iceRestart = false) => {
+    const local = selfRef.current;
+    if (!local || stoppedRef.current || !shouldInitiate(local, remote)) return;
+    if (offeringRef.current.has(remote.id)) return;
+
+    offeringRef.current.add(remote.id);
+    try {
+      let pc = peersRef.current.get(remote.id);
+      if (!pc || pc.signalingState === 'closed') pc = createPeer(remote);
+      if (!pc) return;
+
+      if (pc.signalingState !== 'stable') {
+        if (iceRestart && pc.signalingState === 'stable') pc.restartIce();
+        return;
+      }
+
+      if (iceRestart) pc.restartIce();
+      const description = await pc.createOffer({ iceRestart });
+      await pc.setLocalDescription(description);
+      if (pc.localDescription) {
+        await sendSignal({
+          type: 'sdp-offer',
+          from: local.id,
+          to: remote.id,
+          sdp: pc.localDescription,
+        }, remote.id);
+      }
+    } catch {
+      closePeer(remote.id);
+    } finally {
+      offeringRef.current.delete(remote.id);
+    }
+  }, [closePeer, createPeer, sendSignal]);
+
+  offerRef.current = offer;
+
   const addMessage = useCallback((message: ChatMessage) => {
-    setMessages((current) => current.some((item) => item.id === message.id) ? current : [...current.slice(-99), message]);
+    setMessages((current) => current.some((item) => item.id === message.id)
+      ? current
+      : [...current.slice(-99), message]);
   }, []);
 
   const handleSignal = useCallback(async (payload: SignalPayload, fromId: string) => {
@@ -166,7 +253,7 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
 
     if (payload.type === 'join') {
       const next = participantsRef.current.some((p) => p.id === payload.participant.id)
-        ? participantsRef.current
+        ? participantsRef.current.map((p) => p.id === payload.participant.id ? payload.participant : p)
         : [...participantsRef.current, payload.participant];
       replaceParticipants(next);
       if (shouldInitiate(local, payload.participant)) await offer(payload.participant);
@@ -176,6 +263,11 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
     if (payload.type === 'leave') {
       replaceParticipants(participantsRef.current.filter((p) => p.id !== payload.participantId));
       closePeer(payload.participantId);
+      setPeerStatuses((current) => {
+        const next = { ...current };
+        delete next[payload.participantId];
+        return next;
+      });
       return;
     }
 
@@ -185,7 +277,13 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
     }
 
     if (payload.type === 'chat-message') {
-      addMessage({ id: payload.id, from: payload.from, senderName: payload.senderName, text: payload.text, timestamp: payload.timestamp });
+      addMessage({
+        id: payload.id,
+        from: payload.from,
+        senderName: payload.senderName,
+        text: payload.text,
+        timestamp: payload.timestamp,
+      });
       return;
     }
 
@@ -197,46 +295,85 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
         xOffset: 10 + Math.random() * 80,
       };
       setReactions((current) => [...current.slice(-12), item]);
-      window.setTimeout(() => setReactions((current) => current.filter((reaction) => reaction.id !== item.id)), 3200);
+      window.setTimeout(() => setReactions((current) => current.filter((r) => r.id !== item.id)), 3200);
       return;
     }
 
-    const remote = participantsRef.current.find((p) => p.id === fromId);
+    let remote = participantsRef.current.find((p) => p.id === fromId);
+    if (!remote) {
+      remote = {
+        id: fromId,
+        name: 'کاربر',
+        joinOrder: Number.MAX_SAFE_INTEGER,
+        color: '#6366f1',
+        isMuted: false,
+        isDeafened: false,
+        isCameraOn: false,
+        isScreenSharing: false,
+        isSpeaking: false,
+        joinedAt: Date.now(),
+        lastHeartbeat: Date.now(),
+      };
+    }
+
     if (payload.type === 'ice-candidate') {
       let pc = peersRef.current.get(fromId);
-      if (!pc && remote) pc = createPeer(remote);
+      if (!pc) pc = createPeer(remote);
       if (!pc) return;
-      if (pc.remoteDescription) { try { await pc.addIceCandidate(payload.candidate); } catch {} }
-      else pendingRef.current.set(fromId, [...(pendingRef.current.get(fromId) || []), payload.candidate]);
+      if (pc.remoteDescription) {
+        try { await pc.addIceCandidate(payload.candidate); } catch {}
+      } else {
+        pendingRef.current.set(fromId, [...(pendingRef.current.get(fromId) || []), payload.candidate]);
+      }
       return;
     }
 
     if (payload.type === 'sdp-offer') {
-      if (!remote || !shouldInitiate(remote, local)) return;
       let pc = peersRef.current.get(fromId);
       if (!pc) pc = createPeer(remote);
-      if (!pc || pc.signalingState !== 'stable') return;
+      if (!pc) return;
+
       try {
+        if (pc.signalingState !== 'stable') {
+          if (shouldInitiate(local, remote)) return;
+          await pc.setLocalDescription({ type: 'rollback' });
+        }
         await pc.setRemoteDescription(payload.sdp);
-        await flush(fromId, pc);
-        await pc.setLocalDescription(await pc.createAnswer());
-        if (pc.localDescription) await sendSignal({ type: 'sdp-answer', from: local.id, to: fromId, sdp: pc.localDescription }, fromId);
-      } catch { closePeer(fromId); }
+        await flushCandidates(fromId, pc);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        if (pc.localDescription) {
+          await sendSignal({
+            type: 'sdp-answer',
+            from: local.id,
+            to: fromId,
+            sdp: pc.localDescription,
+          }, fromId);
+        }
+      } catch {
+        closePeer(fromId);
+      }
       return;
     }
 
     if (payload.type === 'sdp-answer') {
       const pc = peersRef.current.get(fromId);
       if (!pc || pc.signalingState !== 'have-local-offer') return;
-      try { await pc.setRemoteDescription(payload.sdp); await flush(fromId, pc); } catch { closePeer(fromId); }
+      try {
+        await pc.setRemoteDescription(payload.sdp);
+        await flushCandidates(fromId, pc);
+      } catch {
+        closePeer(fromId);
+      }
     }
-  }, [addMessage, closePeer, createPeer, flush, offer, replaceParticipants, sendSignal]);
+  }, [addMessage, closePeer, createPeer, flushCandidates, offer, replaceParticipants, sendSignal]);
 
   handleSignalRef.current = handleSignal;
 
   const heartbeat = useCallback(async () => {
     const local = selfRef.current;
     if (!local || stoppedRef.current) return;
+
     try {
       const response = await fetch('/api/room/heartbeat', {
         method: 'POST',
@@ -250,21 +387,32 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
         cache: 'no-store',
       });
       if (!response.ok) throw new Error('heartbeat failed');
-      const data = await response.json() as { signals?: Array<{ from: string; payload: SignalPayload; timestamp: number }>; currentMembers?: Participant[] };
+
+      const data = await response.json() as {
+        signals?: Array<{ from: string; payload: SignalPayload; timestamp: number }>;
+        currentMembers?: Participant[];
+      };
+
       for (const signal of data.signals || []) {
         lastSignalRef.current = Math.max(lastSignalRef.current, signal.timestamp);
         await handleSignalRef.current(signal.payload, signal.from);
       }
+
       const members = (data.currentMembers || []).filter((p) => p.id !== local.id);
       replaceParticipants(members);
+
       for (const remote of members) {
-        if (shouldInitiate(local, remote)) {
-          const pc = peersRef.current.get(remote.id);
-          if (!pc || pc.connectionState === 'failed' || pc.connectionState === 'closed') void offer(remote);
+        if (!shouldInitiate(local, remote)) continue;
+        const pc = peersRef.current.get(remote.id);
+        if (!pc || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          void offer(remote);
         }
       }
-    } catch {}
-    if (!stoppedRef.current) pollTimerRef.current = setTimeout(() => void heartbeat(), 900);
+    } catch {
+      // The next heartbeat retries automatically.
+    }
+
+    if (!stoppedRef.current) pollTimerRef.current = setTimeout(() => void heartbeat(), 1000);
   }, [offer, replaceParticipants, roomId]);
 
   useEffect(() => {
@@ -273,12 +421,27 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
 
     const start = async () => {
       try {
+        if (!navigator.mediaDevices?.getUserMedia) throw new Error('مرورگر شما از میکروفون پشتیبانی نمی‌کند');
+
         const key = `aura-voice-id:${roomId}`;
         let id = sessionStorage.getItem(key);
-        if (!id) { id = crypto.randomUUID(); sessionStorage.setItem(key, id); }
+        if (!id) {
+          id = crypto.randomUUID();
+          sessionStorage.setItem(key, id);
+        }
 
-        const media = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        if (!active) { media.getTracks().forEach((t) => t.stop()); return; }
+        const media = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          video: false,
+        });
+        if (!active) {
+          media.getTracks().forEach((track) => track.stop());
+          return;
+        }
         localStreamRef.current = media;
 
         const response = await fetch('/api/room/join', {
@@ -294,8 +457,12 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
         setSelf(data.self);
         replaceParticipants(data.others || []);
         setConnecting(false);
-        lastSignalRef.current = Date.now();
-        for (const remote of data.others || []) if (shouldInitiate(data.self, remote)) void offer(remote);
+
+        // Start just after joining so we don't miss fresh SDP/ICE signals.
+        lastSignalRef.current = Date.now() - 1000;
+        for (const remote of data.others || []) {
+          if (shouldInitiate(data.self, remote)) void offer(remote);
+        }
         await heartbeat();
       } catch (err) {
         if (!active) return;
@@ -305,18 +472,30 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
     };
 
     void start();
+
     return () => {
       active = false;
       stoppedRef.current = true;
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
       peersRef.current.forEach((pc) => pc.close());
       peersRef.current.clear();
-      audioRef.current.forEach((audio) => { audio.pause(); audio.srcObject = null; audio.remove(); });
+      audioRef.current.forEach((audio) => {
+        audio.pause();
+        audio.srcObject = null;
+        audio.remove();
+      });
       audioRef.current.clear();
-      localStreamRef.current?.getTracks().forEach((t) => t.stop());
+      localStreamRef.current?.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
       const id = selfRef.current?.id;
-      if (id) void fetch('/api/room/leave', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ roomId, participantId: id }), keepalive: true }).catch(() => {});
+      if (id) {
+        void fetch('/api/room/leave', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ roomId, participantId: id }),
+          keepalive: true,
+        }).catch(() => {});
+      }
     };
   }, [heartbeat, offer, replaceParticipants, roomId, userName]);
 
@@ -365,9 +544,14 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
 
   const sendReaction = (emoji: string) => {
     const id = crypto.randomUUID();
-    const item: ReactionItem = { id, from: selfRef.current?.id || '', emoji, xOffset: 10 + Math.random() * 80 };
+    const item: ReactionItem = {
+      id,
+      from: selfRef.current?.id || '',
+      emoji,
+      xOffset: 10 + Math.random() * 80,
+    };
     setReactions((current) => [...current.slice(-12), item]);
-    window.setTimeout(() => setReactions((current) => current.filter((reaction) => reaction.id !== id)), 3200);
+    window.setTimeout(() => setReactions((current) => current.filter((r) => r.id !== id)), 3200);
     void sendSignal({ type: 'reaction', id, from: selfRef.current?.id || '', emoji, timestamp: Date.now() });
   };
 
@@ -380,6 +564,7 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
   };
 
   const allParticipants = [...(self ? [self] : []), ...participants];
+  const connectedCount = Object.values(peerStatuses).filter((status) => status === 'connected').length;
 
   return (
     <div dir="rtl" className="voice-app min-h-screen overflow-hidden bg-[#070b16] text-white">
@@ -394,17 +579,16 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
               <span className="live-pill"><i /> زنده</span>
             </div>
             <div className="mt-0.5 flex items-center gap-1 text-[10px] text-white/40">
-              <span className="truncate max-w-36 sm:max-w-64">اتاق {roomId}</span>
+              <span className="max-w-36 truncate sm:max-w-64">اتاق {roomId}</span>
               <button onClick={() => void copyRoom()} className="rounded p-1 hover:bg-white/10" title="کپی لینک اتاق"><Copy className="h-3 w-3" /></button>
               {copied && <span className="text-emerald-300">کپی شد</span>}
             </div>
           </div>
         </div>
-
         <div className="flex items-center gap-2">
           <div className="member-count"><Users className="h-3.5 w-3.5" /> {allParticipants.length}</div>
           <button onClick={() => setChatOpen(true)} className="icon-btn relative" title="چت">
-            <MessageCircle className="h-4.5 w-4.5" />
+            <MessageCircle className="h-4 w-4" />
             {messages.length > 0 && <span className="chat-badge">{messages.length > 99 ? '99+' : messages.length}</span>}
           </button>
         </div>
@@ -422,7 +606,7 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
           </div>
           <div className="hidden rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-left sm:block">
             <div className="text-[10px] text-white/35">وضعیت اتصال</div>
-            <div className="mt-1 flex items-center gap-2 text-xs font-semibold text-emerald-300"><span className="status-dot" /> WebRTC فعال</div>
+            <div className="mt-1 flex items-center gap-2 text-xs font-semibold text-emerald-300"><span className="status-dot" /> {connectedCount > 0 ? `${connectedCount} اتصال صوتی فعال` : 'در انتظار اتصال صوتی'}</div>
           </div>
         </section>
 
@@ -437,6 +621,7 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
                 {allParticipants.map((participant, index) => {
                   const local = participant.id === self?.id;
                   const isMuted = local ? muted : participant.isMuted;
+                  const status = local ? 'connected' : peerStatuses[participant.id];
                   return (
                     <article key={participant.id} className={`participant-card ${local ? 'is-self' : ''}`}>
                       <div className="card-top">
@@ -445,13 +630,13 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
                       </div>
                       <div className={`avatar ${local ? 'avatar-self' : ''} ${isMuted ? 'is-muted' : ''}`}>
                         <span>{initials(participant.name)}</span>
-                        {!isMuted && <span className="speaking-ring" />}
+                        {!isMuted && status === 'connected' && <span className="speaking-ring" />}
                       </div>
                       <div className="mt-4 min-w-0">
                         <div className="truncate text-sm font-bold">{participant.name}</div>
                         <div className="mt-1 flex items-center gap-1.5 text-[10px] text-white/35">
                           {isMuted ? <MicOff className="h-3 w-3" /> : <Mic className="h-3 w-3 text-emerald-300" />}
-                          {isMuted ? 'میکروفون خاموش' : 'در حال صحبت'}
+                          {isMuted ? 'میکروفون خاموش' : status === 'connected' ? 'متصل به Voice' : status === 'connecting' ? 'در حال اتصال...' : 'اتصال ناموفق'}
                         </div>
                       </div>
                     </article>
@@ -495,7 +680,7 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
               const mine = message.from === self?.id;
               return <div key={message.id} className={`mb-4 flex flex-col ${mine ? 'items-start' : 'items-end'}`}>
                 <span className="mb-1 px-1 text-[10px] text-white/35">{message.senderName}</span>
-                <div className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 text-xs leading-5 ${mine ? 'rounded-tr-md bg-indigo-500/25 border border-indigo-300/15' : 'rounded-tl-md bg-white/[0.07] border border-white/10'}`}>{message.text}</div>
+                <div className={`max-w-[88%] rounded-2xl px-3.5 py-2.5 text-xs leading-5 ${mine ? 'rounded-tr-md border border-indigo-300/15 bg-indigo-500/25' : 'rounded-tl-md border border-white/10 bg-white/[0.07]'}`}>{message.text}</div>
                 <time className="mt-1 px-1 text-[9px] text-white/20">{new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
               </div>;
             })}
