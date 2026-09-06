@@ -1,10 +1,23 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { StreamVideoClient, type Call, type CallSessionResponse } from '@stream-io/video-react-sdk';
+import { StreamVideoClient, type Call } from '@stream-io/video-react-sdk';
 
 type Participant = { id: string; name: string; speaking: boolean };
 type Message = { id: string; name: string; message: string; time: number };
+
+type StreamParticipant = {
+  user: { id: string; name?: string };
+  isSpeaking?: boolean;
+};
+
+type CustomEvent = {
+  custom?: {
+    type?: string;
+    payload?: { message?: string };
+    user?: { id?: string; name?: string };
+  };
+};
 
 export default function useVoiceChat() {
   const [joined, setJoined] = useState(false);
@@ -24,15 +37,16 @@ export default function useVoiceChat() {
   const userIdRef = useRef('');
 
   const syncParticipants = useCallback((call: Call) => {
+    const raw = call.state.participants as unknown as StreamParticipant[] | Map<string, StreamParticipant>;
+    const list = Array.isArray(raw) ? raw : Array.from(raw.values());
     const selfId = userIdRef.current;
-    const values = Array.from(call.state.participants.values()).map((p) => ({
+    const values = list.map((p) => ({
       id: p.user.id,
       name: p.user.name || 'کاربر',
       speaking: Boolean(p.isSpeaking),
     }));
     setParticipants(values.filter((p) => p.id !== selfId));
-    const me = values.find((p) => p.id === selfId);
-    setSelfSpeaking(Boolean(me?.speaking));
+    setSelfSpeaking(Boolean(values.find((p) => p.id === selfId)?.speaking));
   }, []);
 
   const join = useCallback(async (roomIdInput: string, nameInput: string) => {
@@ -71,14 +85,25 @@ export default function useVoiceChat() {
         'call.session_participant_left',
         'call.updated',
         'call.session_started',
-        'call.member_added',
-        'call.member_removed',
-        'call.stats_report',
       ];
       for (const event of events) {
         const unsubscribe = call.on(event as never, sync);
         listenersRef.current.push(unsubscribe);
       }
+
+      const unsubscribeChat = call.on('custom', (event) => {
+        const custom = event as unknown as CustomEvent;
+        if (custom.custom?.type !== 'room-chat') return;
+        const message = custom.custom.payload?.message;
+        if (!message) return;
+        setMessages((prev) => [...prev, {
+          id: crypto.randomUUID(),
+          name: custom.custom?.user?.name || 'کاربر',
+          message,
+          time: Date.now(),
+        }]);
+      });
+      listenersRef.current.push(unsubscribeChat);
 
       sync();
       setRoomId(roomIdInput);
@@ -130,24 +155,11 @@ export default function useVoiceChat() {
   const sendMessage = useCallback((message: string) => {
     const call = callRef.current;
     if (!call || !message.trim()) return;
-    void call.sendCustomEvent({ type: 'room-chat', message: message.trim().slice(0, 1000) }).catch(() => {});
+    void call.sendCustomEvent({
+      type: 'room-chat',
+      payload: { message: message.trim().slice(0, 1000) },
+    }).catch(() => {});
   }, []);
-
-  useEffect(() => {
-    const call = callRef.current;
-    if (!call) return;
-    const onChat = (event: { custom?: { type?: string; message?: string; user?: { id?: string; name?: string } } }) => {
-      if (event.custom?.type !== 'room-chat' || !event.custom.message) return;
-      setMessages((prev) => [...prev, {
-        id: crypto.randomUUID(),
-        name: event.custom?.user?.name || 'کاربر',
-        message: event.custom.message,
-        time: Date.now(),
-      }]);
-    };
-    const unsubscribe = call.on('custom', onChat as never);
-    return unsubscribe;
-  }, [joined]);
 
   useEffect(() => () => leave(), [leave]);
 
