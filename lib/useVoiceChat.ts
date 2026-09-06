@@ -66,9 +66,13 @@ export default function useVoiceChat() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Token error');
 
+      // IMPORTANT: this must be a regular Stream user, not a Stream guest.
+      // The API route upserts the same user with role `user`, which is allowed
+      // to create/join calls. Using `type: 'guest'` here makes Stream reject
+      // call creation with error 17 (CreateCall is not allowed for guests).
       const client = new StreamVideoClient({
         apiKey: data.apiKey,
-        user: { id: userId, name: nameInput || 'کاربر', type: 'guest' },
+        user: { id: userId, name: nameInput || 'کاربر', role: 'user' },
         token: data.token,
       });
       clientRef.current = client;
