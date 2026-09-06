@@ -2,7 +2,7 @@
 
 import { useState, Suspense } from 'react';
 import Lobby from '@/components/Lobby';
-import LiveKitVoiceRoom from '@/components/LiveKitVoiceRoom';
+import VoiceRoom from '@/components/VoiceRoom';
 
 function VoiceChatApp() {
   const [roomId, setRoomId] = useState<string>(() => {
@@ -19,7 +19,6 @@ function VoiceChatApp() {
     setRoomId(targetRoomId);
     setUserName(targetUserName);
     setIsJoined(true);
-
     if (typeof window !== 'undefined') {
       const url = new URL(window.location.href);
       url.searchParams.set('room', targetRoomId);
@@ -36,11 +35,8 @@ function VoiceChatApp() {
     }
   };
 
-  if (!isJoined) {
-    return <Lobby onJoin={handleJoin} initialRoomId={roomId} />;
-  }
-
-  return <LiveKitVoiceRoom roomId={roomId} userName={userName} onLeave={handleLeave} />;
+  if (!isJoined) return <Lobby onJoin={handleJoin} initialRoomId={roomId} />;
+  return <VoiceRoom roomId={roomId} userName={userName} onLeave={handleLeave} />;
 }
 
 export default function Page() {
