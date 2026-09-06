@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { joinRoom } from '@/lib/room-store';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -13,7 +16,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { self, others } = joinRoom(roomId, participantId, name || '');
+    const { self, others } = await joinRoom(roomId, participantId, name || '');
 
     return NextResponse.json({
       success: true,
