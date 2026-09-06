@@ -86,7 +86,6 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
       if (!audio) {
         audio = document.createElement('audio');
         audio.autoplay = true;
-        audio.playsInline = true;
         audio.volume = 1;
         audioRef.current.set(remote.id, audio);
         document.body.appendChild(audio);
@@ -124,7 +123,6 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
   const handleSignal = useCallback(async (payload: SignalPayload, fromId: string) => {
     const local = selfRef.current;
     if (!local || stoppedRef.current || fromId === local.id) return;
-
     if (payload.type === 'join') {
       const next = participantsRef.current.some((p) => p.id === payload.participant.id) ? participantsRef.current : [...participantsRef.current, payload.participant];
       replaceParticipants(next);
@@ -140,17 +138,13 @@ export default function VoiceRoom({ roomId, userName, onLeave }: Props) {
       replaceParticipants(participantsRef.current.map((p) => p.id === payload.participantId ? { ...p, ...payload.updates } : p));
       return;
     }
-
     const remote = participantsRef.current.find((p) => p.id === fromId);
     if (payload.type === 'ice-candidate') {
       let pc = peersRef.current.get(fromId);
       if (!pc && remote) pc = createPeer(remote);
       if (!pc) return;
-      if (pc.remoteDescription) {
-        try { await pc.addIceCandidate(payload.candidate); } catch {}
-      } else {
-        pendingRef.current.set(fromId, [...(pendingRef.current.get(fromId) || []), payload.candidate]);
-      }
+      if (pc.remoteDescription) { try { await pc.addIceCandidate(payload.candidate); } catch {} }
+      else pendingRef.current.set(fromId, [...(pendingRef.current.get(fromId) || []), payload.candidate]);
       return;
     }
     if (payload.type === 'sdp-offer') {
