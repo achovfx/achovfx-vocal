@@ -1,5 +1,36 @@
 'use client';
 
+// WebRTC SDP offers are routed through the room API so the server can enforce
+// one deterministic offerer per pair. BroadcastChannel is still useful for
+// low-latency UI/chat events, but forwarding SDP offers through it can create
+// offer glare when two tabs join the same room at nearly the same time.
+function installWebRTCSignalGuard() {
+  if (typeof window === 'undefined' || !window.BroadcastChannel) return;
+
+  const proto = window.BroadcastChannel.prototype as BroadcastChannel['__proto__'] & {
+    __auraWebRTCGuardInstalled?: boolean;
+  };
+
+  if (proto.__auraWebRTCGuardInstalled) return;
+
+  const originalPostMessage = proto.postMessage;
+  proto.postMessage = function (message: unknown) {
+    if (
+      message &&
+      typeof message === 'object' &&
+      'payload' in message &&
+      (message as { payload?: { type?: string } }).payload?.type === 'sdp-offer'
+    ) {
+      return;
+    }
+    return originalPostMessage.call(this, message);
+  };
+
+  proto.__auraWebRTCGuardInstalled = true;
+}
+
+installWebRTCSignalGuard();
+
 class SoundEffectsManager {
   private ctx: AudioContext | null = null;
   private enabled: boolean = true;
@@ -52,9 +83,9 @@ class SoundEffectsManager {
       osc1.type = 'sine';
       osc2.type = 'triangle';
 
-      osc1.frequency.setValueAtTime(392, now); // G4
-      osc1.frequency.exponentialRampToValueAtTime(523.25, now + 0.15); // C5
-      osc1.frequency.exponentialRampToValueAtTime(659.25, now + 0.3); // E5
+      osc1.frequency.setValueAtTime(392, now);
+      osc1.frequency.exponentialRampToValueAtTime(523.25, now + 0.15);
+      osc1.frequency.exponentialRampToValueAtTime(659.25, now + 0.3);
 
       osc2.frequency.setValueAtTime(196, now);
       osc2.frequency.exponentialRampToValueAtTime(261.63, now + 0.3);
@@ -87,8 +118,8 @@ class SoundEffectsManager {
       const gain = ctx.createGain();
 
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(523.25, now); // C5
-      osc.frequency.exponentialRampToValueAtTime(329.63, now + 0.25); // E4
+      osc.frequency.setValueAtTime(523.25, now);
+      osc.frequency.exponentialRampToValueAtTime(329.63, now + 0.25);
 
       gain.gain.setValueAtTime(0.1, now);
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
