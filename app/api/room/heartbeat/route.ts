@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { heartbeat } from '@/lib/room-store';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -13,7 +16,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { signals, currentMembers } = heartbeat(
+    const { signals, currentMembers } = await heartbeat(
       roomId,
       participantId,
       Number(lastSignalTimestamp) || 0,
