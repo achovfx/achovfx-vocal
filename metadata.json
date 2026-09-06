@@ -1,0 +1,6 @@
+{
+  "name": "AchoVfx Vocal",
+  "description": "High-performance real-time voice and video chat with sequential profile colors, local nicknames, screen share, and crystal clear audio.",
+  "requestFramePermissions": ["camera", "microphone", "display-capture"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
