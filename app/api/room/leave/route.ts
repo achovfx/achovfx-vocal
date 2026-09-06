@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { leaveRoom } from '@/lib/room-store';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   try {
     let body: { roomId?: string; participantId?: string } = {};
@@ -24,7 +27,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    leaveRoom(roomId, participantId);
+    await leaveRoom(roomId, participantId);
 
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
