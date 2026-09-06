@@ -134,15 +134,15 @@ export default function VoiceRoomFixed({ roomId, userName, onLeave }: Props) {
     pc.ontrack = ({ streams, track }) => {
       const remoteStream = streams[0] || new MediaStream([track]);
       let el = audio.current.get(remote.id);
-      if (!el) {
-        el = document.createElement('audio');
-        el.autoplay = true;
-        el.playsInline = true;
-        el.controls = false;
-        el.setAttribute('aria-hidden', 'true');
-        document.body.appendChild(el);
-        audio.current.set(remote.id, el);
-      }
+if (!el) {
+    el = document.createElement('audio');
+    el.autoplay = true;
+    el.setAttribute('playsinline', 'true');
+    el.controls = false;
+    el.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(el);
+    audio.current.set(remote.id, el);
+}
       el.srcObject = remoteStream;
       el.muted = deafenedRef.current;
       el.play().then(() => setAudioUnlock(false)).catch(() => setAudioUnlock(true));
