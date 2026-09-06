@@ -1,21 +1,33 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# AchoVocal
 
-# Run and deploy your AI Studio app
+گفتگوی صوتی گروهی P2P با WebRTC، چت متنی و رابط شیشه‌ای. برای Voice هیچ سرویس پولی یا SDK پولی لازم نیست.
 
-This contains everything you need to run your app locally.
+## اجرای محلی
 
-View your app in AI Studio: https://ai.studio/apps/eebdfcb0-be5f-4292-a3db-100fa6c2a3fc
+```bash
+npm install
+npm run dev
+```
 
-## Run Locally
+برای اجرای روی یک Node server، حالت in-memory می‌تواند برای تست استفاده شود. اما روی Vercel/serverless باید signaling پایدار فعال باشد؛ چون درخواست‌های API ممکن است روی instanceهای مختلف اجرا شوند.
 
-**Prerequisites:**  Node.js
+## Signaling در Production
 
+یک دیتابیس رایگان Upstash Redis بسازید و این دو متغیر را در Environment Variables پروژه قرار دهید:
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
-"# achovfx-vocal" 
+```env
+UPSTASH_REDIS_REST_URL=...
+UPSTASH_REDIS_REST_TOKEN=...
+```
+
+همین متغیرها را برای Preview و Production نیز تنظیم کنید و سپس یک Redeploy انجام دهید.
+
+## Voice
+
+- WebRTC مستقیم بین مرورگرهاست.
+- ICE candidateها قبل از آماده شدن remote description در صف نگه داشته می‌شوند.
+- فقط یک طرف هر pair initiator است تا offer collision ایجاد نشود.
+- در صورت شکست ICE، اتصال دوباره با ICE restart تلاش می‌شود.
+- اگر مرورگر autoplay صدای remote را مسدود کند، دکمه فعال‌سازی صدا نمایش داده می‌شود.
+
+هیچ فایل صوتی یا تصویری روی سرور آپلود نمی‌شود؛ سرور فقط signaling و وضعیت اتاق را مدیریت می‌کند.
