@@ -54,7 +54,7 @@ export default function VoiceRoomFixed({ roomId, userName, onLeave }: Props) {
   const stopped = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const offerLocks = useRef(new Set<string>());
-  const reconnectTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+ const reconnectTimers = useRef<Map<string, number>>(new Map());
   const mutedRef = useRef(false);
   const deafenedRef = useRef(false);
   const messagesEnd = useRef<HTMLDivElement>(null);
@@ -131,11 +131,26 @@ export default function VoiceRoomFixed({ roomId, userName, onLeave }: Props) {
   }, [createPeer, destroyPeer, signal]);
   useEffect(() => { makeOfferRef.current = makeOffer; }, [makeOffer]);
 
-  const scheduleReconnect = useCallback((id: string, remote: Participant) => {
-    if (reconnectTimers.current.has(id) || stopped.current) return;
-    const t = window.setTimeout(() => { reconnectTimers.current.delete(id); if (stopped.current || !selfRef.current || !initiates(selfRef.current, remote)) return; destroyPeer(id); void makeOfferRef.current(remote, true); }, 1000);
-    reconnectTimers.current.set(id, t);
-  }, [destroyPeer]);
+const scheduleReconnect = useCallback((id: string, remote: Participant) => {
+  if (reconnectTimers.current.has(id) || stopped.current) return;
+
+  const t = window.setTimeout(() => {
+    reconnectTimers.current.delete(id);
+
+    if (
+      stopped.current ||
+      !selfRef.current ||
+      !initiates(selfRef.current, remote)
+    ) {
+      return;
+    }
+
+    destroyPeer(id);
+    void makeOfferRef.current(remote, true);
+  }, 1000);
+
+  reconnectTimers.current.set(id, t);
+}, [destroyPeer]);
   useEffect(() => { reconnectRef.current = scheduleReconnect; }, [scheduleReconnect]);
 
   const handleEnvelope = useCallback(async (item: SignalEnvelope) => {
