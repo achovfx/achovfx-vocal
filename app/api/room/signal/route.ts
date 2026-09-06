@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sendSignal } from '@/lib/room-store';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -13,7 +16,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    sendSignal(roomId, fromId, toId, payload);
+    await sendSignal(roomId, fromId, toId, payload);
 
     return NextResponse.json({ success: true });
   } catch (err: unknown) {
