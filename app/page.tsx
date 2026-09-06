@@ -2,7 +2,7 @@
 
 import { useState, Suspense } from 'react';
 import Lobby from '@/components/Lobby';
-import VoiceRoom from '@/components/VoiceRoom';
+import VoiceRoom from '@/components/VoiceRoomFixed';
 
 function VoiceChatApp() {
   const [roomId, setRoomId] = useState<string>(() => {
